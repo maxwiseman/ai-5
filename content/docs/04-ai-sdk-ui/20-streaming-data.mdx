@@ -1,0 +1,301 @@
+---
+title: Streaming Custom Data
+description: Learn how to stream custom data to the client.
+---
+
+# Streaming Custom Data
+
+It is often useful to send additional data alongside the model's response.
+For example, you may want to send status information, the message ids after storing them,
+or references to content that the language model is referring to.
+
+The AI SDK provides several helpers that allows you to stream additional data to the client
+and attach it to the `UIMessage` parts array:
+
+- `createUIMessageStream`: creates a data stream
+- `createUIMessageStreamResponse`: creates a response object that streams data
+- `pipeUIMessageStreamToResponse`: pipes a data stream to a server response object
+
+The data is streamed as part of the response stream.
+
+## Sending Custom Data from the Server
+
+In your server-side route handler, you can use `createUIMessageStreamResponse` in combination with `streamText`.
+You need to:
+
+1. Call `createUIMessageStreamResponse` to get a callback function with a `UIMessageStreamWriter`.
+2. Write to the `UIMessageStreamWriter` to stream additional data parts.
+3. Merge the `streamText` result into the `UIMessageStreamWriter`.
+4. Return the response from `createUIMessageStreamResponse`
+
+Here is an example:
+
+```tsx filename="route.ts" highlight="7-10,16,19-27,29-30"
+import { openai } from '@ai-sdk/openai';
+import {
+  createUIMessageStreamResponse,
+  streamText,
+  convertToModelMessages,
+} from 'ai';
+
+export async function POST(req: Request) {
+  const { messages } = await req.json();
+
+  // immediately start streaming (solves RAG issues with status, etc.)
+  return createUIMessageStreamResponse({
+    execute: ({ writer }) => {
+      // write custom data parts to the stream:
+      writer.write({
+        type: 'data-status',
+        id: 'call-status',
+        data: { message: 'initialized call' },
+      });
+
+      const result = streamText({
+        model: openai('gpt-4.1'),
+        messages: convertToModelMessages(messages),
+        onFinish() {
+          // write completion data:
+          writer.write({
+            type: 'data-completion',
+            id: 'call-completion',
+            data: { message: 'call completed', timestamp: Date.now() },
+          });
+        },
+      });
+
+      writer.merge(result.toUIMessageStream());
+    },
+  });
+}
+```
+
+<Note>
+  You can also send stream data from custom backends, e.g. Python / FastAPI,
+  using the [Data Stream
+  Protocol](/docs/ai-sdk-ui/stream-protocol#data-stream-protocol).
+</Note>
+
+## Sending Custom Sources
+
+You can send custom sources to the client using the `write` method on the `UIMessageStreamWriter`:
+
+```tsx filename="route.ts" highlight="9-17"
+import { openai } from '@ai-sdk/openai';
+import {
+  createUIMessageStreamResponse,
+  streamText,
+  convertToModelMessages,
+} from 'ai';
+
+export async function POST(req: Request) {
+  const { messages } = await req.json();
+
+  return createUIMessageStreamResponse({
+    execute: ({ writer }) => {
+      // write a custom url source to the stream:
+      writer.write({
+        type: 'source',
+        value: {
+          type: 'source',
+          sourceType: 'url',
+          id: 'source-1',
+          url: 'https://example.com',
+          title: 'Example Source',
+        },
+      });
+
+      const result = streamText({
+        model: openai('gpt-4.1'),
+        messages: convertToModelMessages(messages),
+      });
+
+      writer.merge(result.toUIMessageStream());
+    },
+  });
+}
+```
+
+## Sending Data Parts
+
+You can send custom data parts to the client that will appear in the message parts array:
+
+```tsx filename="route.ts" highlight="9-14,20-25"
+import { openai } from '@ai-sdk/openai';
+import {
+  createUIMessageStreamResponse,
+  streamText,
+  convertToModelMessages,
+} from 'ai';
+
+export async function POST(req: Request) {
+  const { messages } = await req.json();
+
+  return createUIMessageStreamResponse({
+    execute: ({ writer }) => {
+      // write custom data part:
+      writer.write({
+        type: 'data-weather',
+        id: 'weather-1',
+        data: { city: 'San Francisco', status: 'loading' },
+      });
+
+      const result = streamText({
+        model: openai('gpt-4.1'),
+        messages: convertToModelMessages(messages),
+        onFinish() {
+          // update the data part:
+          writer.write({
+            type: 'data-weather',
+            id: 'weather-1',
+            data: {
+              city: 'San Francisco',
+              weather: 'sunny',
+              status: 'success',
+            },
+          });
+        },
+      });
+
+      writer.merge(result.toUIMessageStream());
+    },
+  });
+}
+```
+
+## Processing Custom Data in `useChat`
+
+The `useChat` hook automatically processes the streamed data and makes it available in the message parts array.
+
+### Accessing Data Parts
+
+On the client, you can access data parts through the `message.parts` array. You need to define the data part schemas when setting up the chat store:
+
+```tsx filename="page.tsx"
+import { useChat } from '@ai-sdk/react';
+import { defaultChatStoreOptions } from 'ai';
+import { z } from 'zod';
+
+const { messages } = useChat({
+  chatStore: defaultChatStoreOptions({
+    api: '/api/chat',
+    dataPartSchemas: {
+      weather: z.object({
+        city: z.string(),
+        weather: z.string().optional(),
+        status: z.enum(['loading', 'success']),
+      }),
+    },
+  }),
+});
+```
+
+### Rendering Data Parts
+
+You can filter and render specific data parts from the message parts array:
+
+```tsx filename="page.tsx" highlight="9-20"
+import { useChat } from '@ai-sdk/react';
+import { defaultChatStoreOptions } from 'ai';
+import { z } from 'zod';
+
+const { messages } = useChat({
+  chatStore: defaultChatStoreOptions({
+    api: '/api/chat',
+    dataPartSchemas: {
+      weather: z.object({
+        city: z.string(),
+        weather: z.string().optional(),
+        status: z.enum(['loading', 'success']),
+      }),
+    },
+  }),
+});
+
+const result = (
+  <>
+    {messages?.map(message => (
+      <div key={message.id}>
+        {message.parts
+          .filter(part => part.type === 'data-weather')
+          .map((part, index) => (
+            <div key={index}>
+              {part.data.status === 'loading' ? (
+                <>Getting weather for {part.data.city}...</>
+              ) : (
+                <>
+                  Weather in {part.data.city}: {part.data.weather}
+                </>
+              )}
+            </div>
+          ))}
+        {message.parts
+          .filter(part => part.type === 'text')
+          .map((part, index) => (
+            <div key={index}>{part.text}</div>
+          ))}
+      </div>
+    ))}
+  </>
+);
+```
+
+#### Example: Complete Chat with Data Parts
+
+```tsx filename="page.tsx"
+'use client';
+
+import { useChat } from '@ai-sdk/react';
+import { defaultChatStoreOptions } from 'ai';
+import { z } from 'zod';
+
+export default function Chat() {
+  const { messages, input, handleInputChange, handleSubmit } = useChat({
+    chatStore: defaultChatStoreOptions({
+      api: '/api/chat',
+      dataPartSchemas: {
+        weather: z.object({
+          city: z.string(),
+          weather: z.string().optional(),
+          status: z.enum(['loading', 'success']),
+        }),
+      },
+    }),
+  });
+
+  return (
+    <>
+      {messages?.map(message => (
+        <div key={message.id}>
+          {message.role === 'user' ? 'User: ' : 'AI: '}
+          {message.parts
+            .filter(part => part.type === 'data-weather')
+            .map((part, index) => (
+              <span
+                key={index}
+                style={{ border: '1px solid blue', padding: '4px' }}
+              >
+                {part.data.status === 'loading' ? (
+                  <>Getting weather for {part.data.city}...</>
+                ) : (
+                  <>
+                    Weather in {part.data.city}: {part.data.weather}
+                  </>
+                )}
+              </span>
+            ))}
+          {message.parts
+            .filter(part => part.type === 'text')
+            .map((part, index) => (
+              <div key={index}>{part.text}</div>
+            ))}
+        </div>
+      ))}
+
+      <form onSubmit={handleSubmit}>
+        <input value={input} onChange={handleInputChange} />
+      </form>
+    </>
+  );
+}
+```

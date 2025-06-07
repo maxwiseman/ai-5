@@ -1,0 +1,72 @@
+'use client';
+
+import { zodSchema } from '@ai-sdk/provider-utils';
+import { useChat } from '@ai-sdk/react';
+import { DefaultChatTransport } from 'ai';
+import { exampleMetadataSchema } from '../api/use-chat-message-metadata/example-metadata-schema';
+import ChatInput from '@/component/chat-input';
+
+export default function Chat() {
+  const { error, status, sendMessage, messages, reload, stop } = useChat({
+    transport: new DefaultChatTransport({
+      api: '/api/use-chat-message-metadata',
+    }),
+    messageMetadataSchema: zodSchema(exampleMetadataSchema),
+  });
+
+  return (
+    <div className="flex flex-col w-full max-w-md py-24 mx-auto stretch">
+      {messages.map(message => (
+        <div key={message.id} className="whitespace-pre-wrap">
+          {message.role === 'user' ? 'User: ' : 'AI: '}
+          {message.metadata?.createdAt && (
+            <div>
+              Created at:{' '}
+              {new Date(message.metadata.createdAt).toLocaleString()}
+            </div>
+          )}
+          {message.metadata?.duration && (
+            <div>Duration: {message.metadata.duration}ms</div>
+          )}
+          {message.metadata?.model && (
+            <div>Model: {message.metadata.model}</div>
+          )}
+          {message.metadata?.totalTokens && (
+            <div>Total tokens: {message.metadata.totalTokens}</div>
+          )}
+          {message.metadata?.finishReason && (
+            <div>Finish reason: {message.metadata.finishReason}</div>
+          )}
+        </div>
+      ))}
+
+      {(status === 'submitted' || status === 'streaming') && (
+        <div className="mt-4 text-gray-500">
+          {status === 'submitted' && <div>Loading...</div>}
+          <button
+            type="button"
+            className="px-4 py-2 mt-4 text-blue-500 border border-blue-500 rounded-md"
+            onClick={stop}
+          >
+            Stop
+          </button>
+        </div>
+      )}
+
+      {error && (
+        <div className="mt-4">
+          <div className="text-red-500">An error occurred.</div>
+          <button
+            type="button"
+            className="px-4 py-2 mt-4 text-blue-500 border border-blue-500 rounded-md"
+            onClick={() => reload()}
+          >
+            Retry
+          </button>
+        </div>
+      )}
+
+      <ChatInput status={status} onSubmit={text => sendMessage({ text })} />
+    </div>
+  );
+}
